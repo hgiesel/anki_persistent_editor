@@ -1,11 +1,10 @@
-from aqt import mw
-from aqt.qt import qconnect
+from aqt import mw, QEvent
+from aqt.qt import qconnect, QEvent, QObject
 from aqt.editcurrent import EditCurrent
 from aqt.gui_hooks import (
     editor_did_init,
     editor_did_init_shortcuts,
     editor_will_show_context_menu,
-    editor_will_load_note,
 )
 from aqt.utils import tooltip
 
@@ -15,23 +14,19 @@ from .utils import presentation_mode_keyword, presentation_shortcut_keyword
 
 
 def toggle_presentation_mode(editor):
-    editor.presentation_mode = not editor.presentation_mode
+    editor.presentation_mode = not getattr(editor, 'presentation_mode', False)
 
     if editor.presentation_mode:
         unobscure_all(editor)
-        mode_string = "presentation"
+        mode_string = 'presentation'
     else:
-        unobscure_if_question(
-            editor, editor.currentField
-        ) if editor.currentField else obscure_if_question(editor)
-        mode_string = "obscure"
+        unobscure_if_question(editor, editor.currentField) if editor.currentField else obscure_if_question(editor)
+        mode_string = 'obscure'
 
-    tooltip(f"Switched to {mode_string} mode", parent=editor.parentWindow)
-
+    tooltip(f'Switched to {mode_string} mode', parent=editor.parentWindow)
 
 def alter_on_html(cuts, editor):
     if isinstance(editor.parentWindow, EditCurrent):
-
         def on_html_edit_persistent():
             field = editor.currentField
 
@@ -44,48 +39,40 @@ def alter_on_html(cuts, editor):
             editor.saveNow(callback)
 
         try:
-            result = next(filter(lambda v: v[0] == "Ctrl+Shift+X", cuts))
+            result = next(filter(lambda v: v[0] == 'Ctrl+Shift+X', cuts))
             del cuts[cuts.index(result)]
         except StopIteration:
             return
 
-        cuts.append(("Ctrl+Shift+X", on_html_edit_persistent))
+        cuts.append(('Ctrl+Shift+X', on_html_edit_persistent))
 
         editor.presentation_mode = mw.pm.profile.get(presentation_mode_keyword, False)
-        cuts.append(
-            (
-                mw.pm.profile.get(presentation_shortcut_keyword, "Ctrl+P"),
-                lambda: toggle_presentation_mode(editor),
-                True,
-            )
-        )
+        cuts.append((mw.pm.profile.get(presentation_shortcut_keyword, 'Ctrl+P'), lambda: toggle_presentation_mode(editor)))
 
+class FocusEventFilter(QObject):
+    def __init__(self, editor, parent=None):
+        super().__init__(parent)
+        self.editor = editor
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.FocusOut:
+            redraw_reviewer(self.editor.mw.reviewer)
+        return False
 
 def setup_editor(editor):
     if isinstance(editor.parentWindow, EditCurrent):
-        qconnect(editor.tags.lostFocus, lambda: redraw_reviewer(editor.mw.reviewer))
-
+        editor.presentation_mode = mw.pm.profile.get(presentation_mode_keyword, False)  # Ensure presentation_mode is set
+        focus_event_filter = FocusEventFilter(editor)
+        editor.web.installEventFilter(focus_event_filter)
 
 def keep_focus_during_context_menu(webview, menu):
-    if isinstance(
-        webview.editor.parentWindow, EditCurrent
-    ) and currently_shows_question(webview.editor.mw.reviewer):
+    if isinstance(webview.editor.parentWindow, EditCurrent) and currently_shows_question(webview.editor.mw.reviewer):
         # prevents eventFilter to overwrite selection field
         webview.editor.parentWindow.do_not_overwrite = True
-        webview.eval("PersistentEditor.saveSelectionField()")
-
-
-def load_js(js, note, editor):
-    return (
-        js + f"PersistentEditor.load(); "
-        if isinstance(editor.parentWindow, EditCurrent)
-        else js
-    )
-
+        webview.eval('PersistentEditor.saveSelectionField()')
 
 def init_editor():
     # is executed before editor_did_init
     editor_did_init_shortcuts.append(alter_on_html)
     editor_did_init.append(setup_editor)
     editor_will_show_context_menu.append(keep_focus_during_context_menu)
-    editor_will_load_note.append(load_js)
